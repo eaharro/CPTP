@@ -1,0 +1,196 @@
+
+SELECT
+  DISTINCT app_leadtime,
+  product_type,
+  promocodeused,
+  dimgeography_country,
+  visit_band,
+  order_band,
+  COUNT(DISTINCT userid) AS distinct_users,
+  COUNT(sessionidfinal) AS visits,
+  COUNT(number_of_orders) AS orders,
+  SUM(number_of_orders) AS sum_orders,
+  SUM(total_gmv) AS gmv,
+  AVG(total_gmv) AS gmv_per_user
+FROM (
+  SELECT
+    userid,
+    sessionidfinal,
+    visit_band,
+    order_band,
+    product_type,
+    promocodeused,
+    dimgeography_country,
+    number_of_orders,
+    total_gmv,
+    app_download,
+    visit_date,
+    account_create,
+    DATE_DIFF(visit_date, app_download, month) AS app_leadtime
+  FROM (
+      --Joins visits with app download date and orders
+      (
+      SELECT
+        c.userid,
+        c.sessionidfinal,
+        us.visit_band,
+        us.order_band,
+        CASE
+          WHEN dimuser.ismobiledevice = 'false' AND dimuser.istablet = 'false' THEN 'Desktop'
+          WHEN dimuser.ismobiledevice = 'true'
+        AND dimuser.istablet = 'true' THEN 'Tablet'
+          WHEN dimuser.ismobiledevice = 'true' AND dimuser.istablet = 'false' THEN 'Mobile'
+          WHEN c.SK_UserAgent = 0 THEN 'app'
+          ELSE NULL
+        END AS product_type,
+        orders.promocodeused,
+        dimgeography.dimgeography_country,
+        orders.number_of_orders,
+        orders.total_gmv,
+        CAST(app_mindate.app_download AS DATE) AS app_download,
+        -- Cast timestamps to dates to get date_diff
+        CAST(c.Begindate AS DATE) AS visit_date,
+        CAST(portal_mindate.first_interaction AS date) AS account_create
+      FROM
+        team_productanalytics.CPTP05_usersessions c
+          
+          
+        --Pulls out minimum interaction timestamp per user id where sk_user=0 to indicate app download date
+      LEFT JOIN (
+        SELECT
+          userid,
+          MIN(Begindate) AS app_download
+        FROM
+          team_productanalytics.CPTP05_usersessions
+        WHERE
+          Begindate > '2016-01-01 00:00:00'
+          AND sk_useragent=0
+          AND ID_type <> 'UNKNOWN'
+        GROUP BY
+          1 ) app_mindate
+      ON
+        app_mindate.userid = c.userid
+          
+          
+        --Pulls out minimum interaction timestamp per user id where sk_user <>0 to ensure user was established before downloading app
+      INNER JOIN (
+        SELECT
+          userid,
+          MIN(Begindate) AS first_interaction
+        FROM
+          team_productanalytics.CPTP05_usersessions
+        WHERE
+          Begindate > '2016-01-01 00:00:00'
+          AND sk_useragent<>0
+          AND ID_type <> 'UNKNOWN'
+        GROUP BY
+          1 ) portal_mindate
+      ON
+        portal_mindate.userid = c.userid
+          
+          
+        --Pulls out orders based on sessionidfinal. Some sessionids have several ordercodes, but filtering on number of orders will most likely preclude these.
+      LEFT JOIN (
+        SELECT
+          DISTINCT cdo.sessionidfinal,
+          fol.promocodeused,
+          COUNT(DISTINCT cdo.ordercode) AS number_of_orders,
+          SUM(cdo.gmv) AS total_gmv
+        FROM
+          team_productanalytics.CrossDeviceOrders cdo
+        LEFT JOIN
+          gold_read.factorderslines fol
+        ON
+          cdo.ordercode=fol.ordercode
+        WHERE
+          datepartition > '2016-01-01'
+        GROUP BY
+          1,
+          2) orders
+      ON
+        c.sessionidfinal = orders.sessionidfinal
+          
+          
+        --Pulls out device/product
+      LEFT JOIN (
+        SELECT
+          dus.sessionidfinal,
+          dua.ismobiledevice,
+          dua.istablet
+        FROM
+          gold_read.dimusersession dus
+        LEFT JOIN
+          gold_read.dimuseragent dua
+        ON
+          dus.sk_useragent=dua.sk_useragent
+        WHERE
+          dus.datepartition > '2016-01-01 00:00:00') dimuser
+      ON
+        c.sessionidfinal=dimuser.sessionidfinal
+          
+          
+        --Pulls out user segments
+      LEFT JOIN
+        team_productanalytics.CPTP11_usersegments us
+      ON
+        c.userid=us.userid
+        AND us.rundate='2018-08-01'
+          
+        --User country for both web and app
+          
+          LEFT JOIN (
+          SELECT 
+              distinct app.session_idfinal as sessionidfinal,
+            dimgeographya.country  AS dimgeography_country
+              FROM gold_read.factlocalyticsevent app
+              left join `bigquery-analytics-workbench.gold_read.dimgeography` dimgeographya on  dimgeographya.sk_geography = app.sk_usercountry
+           UNION ALL
+           SELECT
+           distinct portal.sessionidfinal as sessionidfinal,
+           dimgeographyp.country as dimgeography_country
+           FROM gold_read.factclickstream_v2 portal 
+              left join `bigquery-analytics-workbench.gold_read.dimgeography` dimgeographyp on  dimgeographyp.sk_geography = portal.sk_usercountrylast
+          ) dimgeography
+          on c.sessionidfinal=dimgeography.sessionidfinal
+          
+      GROUP BY
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12) ) data
+  WHERE
+    DATE_DIFF('2018-10-03', app_download, MONTH) = 6
+    AND date_diff (app_download,
+      account_create,
+      MONTH) >= 6
+      AND product_type IS NOT NULL
+     and dimgeography_country <>'China'
+  GROUP BY
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12)
+    where app_leadtime >= -6
+GROUP BY
+  1,
+  2,
+  3,
+  4,
+  5,
+  6
